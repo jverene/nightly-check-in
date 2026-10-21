@@ -73,6 +73,40 @@ export function weekStartMonday(dateStr: string): string {
   return addDays(dateStr, wd === 0 ? -6 : 1 - wd);
 }
 
+/**
+ * The school week runs Sunday–Thursday (the five school nights). The "This
+ * week" counter resets each Sunday night, so its start is the most recent
+ * Sunday on or before dateStr.
+ */
+export function schoolWeekStart(dateStr: string): string {
+  return addDays(dateStr, -weekdayOf(dateStr));
+}
+
+/** Most recent school night strictly before dateStr. */
+export function prevSchoolNight(dateStr: string): string {
+  let d = addDays(dateStr, -1);
+  while (!isSchoolNight(d)) d = addDays(d, -1);
+  return d;
+}
+
+/** Number of school nights in [from, to] inclusive. */
+export function schoolNightsBetween(from: string, to: string): number {
+  if (from > to) return 0;
+  let n = 0;
+  for (let d = from; d <= to; d = addDays(d, 1)) {
+    if (isSchoolNight(d)) n++;
+  }
+  return n;
+}
+
+/** Configured reminder slots ("19:30,21:30") as "HH:MM" strings. */
+export function reminderSlots(): string[] {
+  return (process.env.REMINDER_SLOTS || "19:30")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => /^\d{2}:\d{2}$/.test(s));
+}
+
 const OPEN_MINUTES = 16 * 60; // 4:00pm
 const LATE_CUTOFF_MINUTES = 3 * 60; // 3:00am next day
 
