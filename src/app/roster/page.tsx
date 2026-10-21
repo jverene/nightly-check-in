@@ -3,7 +3,7 @@ import Link from "next/link";
 import { db } from "@/db";
 import { slots } from "@/db/schema";
 import { requireStaff } from "@/lib/session";
-import { rosterData } from "@/lib/roster";
+import { rosterAggregate, rosterData } from "@/lib/roster";
 import { addDays, todayLocal, weekStartMonday, weekdayName } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
@@ -11,12 +11,54 @@ export const dynamic = "force-dynamic";
 export default async function RosterPage({
   searchParams,
 }: {
-  searchParams: Promise<{ week?: string; section?: string }>;
+  searchParams: Promise<{ week?: string; section?: string; view?: string }>;
 }) {
   const staff = await requireStaff();
   if (!staff) redirect("/login");
 
-  const { week, section } = await searchParams;
+  const { week, section, view } = await searchParams;
+
+  if (view === "aggregate") {
+    const agg = await rosterAggregate(week ?? null);
+    return (
+      <div className="stack">
+        <div>
+          <h1>Weekly roster</h1>
+          <p className="muted small" style={{ marginTop: 6 }}>
+            Class-level completion for the week of {agg.week_start}. Percentages only.
+          </p>
+        </div>
+        <div className="nav-row" style={{ padding: 0 }}>
+          <Link href={`/roster?week=${agg.week_start}`}>By code</Link>
+          <Link href={`/roster?view=aggregate&week=${agg.week_start}`} style={{ color: "inherit", fontWeight: 500 }}>
+            Class aggregate
+          </Link>
+        </div>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Class</th>
+              <th>This week</th>
+            </tr>
+          </thead>
+          <tbody>
+            {agg.rows.map((r) => (
+              <tr key={r.class_section}>
+                <td>{r.class_section}</td>
+                <td>{r.percent}%</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {staff.admin.role === "SPONSOR" && (
+          <nav className="nav-row">
+            <Link href="/admin">Admin</Link>
+          </nav>
+        )}
+      </div>
+    );
+  }
+
   const sections = (await db().selectDistinct({ s: slots.classSection }).from(slots)).map(
     (r) => r.s,
   );
@@ -49,6 +91,7 @@ export default async function RosterPage({
             {s}
           </Link>
         ))}
+        <Link href={`/roster?view=aggregate&week=${data.week_start}`}>Class aggregate</Link>
       </div>
 
       <div className="row-between">
