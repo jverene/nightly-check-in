@@ -9,9 +9,9 @@ export default function DataPage() {
       <div>
         <h1>Withdrawals</h1>
         <p className="muted small" style={{ marginTop: 6 }}>
-          Deletes every row for a code — check-ins, supplements, plans, confirmations, test
-          dates, courses, reminders, sessions — and marks consent WITHDRAWN so exports keep
-          excluding it. This cannot be undone. The deletion itself is logged.
+          Deletes every row for a code — check-ins, supplements, plans, confirmations, courses,
+          reminders, sessions — and marks consent WITHDRAWN so exports keep excluding it. This
+          cannot be undone. The deletion itself is logged.
         </p>
       </div>
       <DeleteForm />

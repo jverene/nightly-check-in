@@ -44,6 +44,8 @@ export default async function AdminPage() {
         <div className="divider" />
         <AdminLink href="/admin/export" title="Export data" desc="Consent-filtered CSV/JSON for analysis" />
         <div className="divider" />
+        <AdminLink href="/admin/calendar" title="Assessment calendar" desc="Class-level test/quiz/assignment dates for analysis" />
+        <div className="divider" />
         <AdminLink href="/admin/data" title="Withdrawals" desc="Delete all data for a code" />
         <div className="divider" />
         <AdminLink href="/admin/audit" title="Audit log" desc="Every sponsor action and auth failure" />

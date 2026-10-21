@@ -9,7 +9,6 @@ import {
   plans,
   pushSubscriptions,
   sessions,
-  testDates,
   weeklySupplements,
 } from "@/db/schema";
 import { requireStaff } from "@/lib/session";
@@ -44,7 +43,6 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ c
   counts.weekly_supplements = (await database.delete(weeklySupplements).where(eq(weeklySupplements.participantCode, code)).returning({ id: weeklySupplements.id })).length;
   counts.plans = (await database.delete(plans).where(eq(plans.participantCode, code)).returning({ id: plans.id })).length;
   counts.confirmations = (await database.delete(confirmations).where(eq(confirmations.participantCode, code)).returning({ id: confirmations.id })).length;
-  counts.test_dates = (await database.delete(testDates).where(eq(testDates.participantCode, code)).returning({ id: testDates.id })).length;
   counts.courses = (await database.delete(courses).where(eq(courses.participantCode, code)).returning({ id: courses.id })).length;
   counts.push_subscriptions = (await database.delete(pushSubscriptions).where(eq(pushSubscriptions.participantCode, code)).returning({ id: pushSubscriptions.id })).length;
   counts.sessions = (await database.delete(sessions).where(eq(sessions.participantCode, code)).returning({ id: sessions.id })).length;
