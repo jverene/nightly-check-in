@@ -22,6 +22,7 @@ export const consentStatusEnum = pgEnum("consent_status", [
   "WITHDRAWN",
 ]);
 export const sleepBandEnum = pgEnum("sleep_band", ["LT5", "5_6", "6_7", "7_8", "GT8"]);
+export const assessTypeEnum = pgEnum("assess_type", ["TEST", "QUIZ", "ASSIGNMENT"]);
 export const staffRoleEnum = pgEnum("staff_role", ["TEACHER", "SPONSOR"]);
 export const actorRoleEnum = pgEnum("actor_role", ["STUDENT", "TEACHER", "SPONSOR", "SYSTEM"]);
 
@@ -76,22 +77,21 @@ export const courses = pgTable(
   (t) => [unique("courses_participant_name_unique").on(t.participantCode, t.courseName)],
 );
 
-export const testDates = pgTable(
-  "test_dates",
-  {
-    id: uuid("id").defaultRandom().primaryKey(),
-    participantCode: text("participant_code")
-      .notNull()
-      .references(() => slots.participantCode),
-    courseId: uuid("course_id")
-      .notNull()
-      .references(() => courses.id, { onDelete: "cascade" }),
-    testDate: date("test_date").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [unique("test_dates_course_date_unique").on(t.courseId, t.testDate)],
-);
+/**
+ * Class-level assessment calendar, typed in by the sponsor from
+ * teacher-provided agendas. Analysis-only: the app never joins this to
+ * student rows, and nothing here is student-facing. Replaces the v1
+ * student-entered test_dates (lead-time is now computed offline by matching
+ * students' courses to this calendar during analysis).
+ */
+export const assessmentCalendar = pgTable("assessment_calendar", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  courseName: text("course_name").notNull(),
+  section: text("section"),
+  assessDate: date("assess_date").notNull(),
+  assessType: assessTypeEnum("assess_type").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const checkins = pgTable(
   "checkins",
@@ -110,6 +110,13 @@ export const checkins = pgTable(
     pnaSleep: boolean("pna_sleep").notNull().default(false),
     pnaQuality: boolean("pna_quality").notNull().default(false),
     pnaWorkload: boolean("pna_workload").notNull().default(false),
+    // Speed instrumentation: client-measured form-render → submit-tap seconds
+    // (clamped 0..3600) and how many course rows differed from the prefill.
+    completionSeconds: integer("completion_seconds"),
+    rowsChanged: integer("rows_changed"),
+    // Data-quality flags, computed at submission, never shown in any UI.
+    flagFast: boolean("flag_fast").notNull().default(false),
+    flagFlat: boolean("flag_flat").notNull().default(false),
   },
   (t) => [
     unique("checkins_participant_date_unique").on(t.participantCode, t.localDate),
@@ -140,7 +147,7 @@ export const weeklySupplements = pgTable(
   ],
 );
 
-export const PLANS_MINUTES = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 999] as const;
+export const PLANS_MINUTES = [15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 999] as const;
 
 export const plans = pgTable(
   "plans",
@@ -153,14 +160,21 @@ export const plans = pgTable(
     courseId: uuid("course_id")
       .notNull()
       .references(() => courses.id, { onDelete: "cascade" }),
-    minutes: smallint("minutes").notNull(),
+    // Explicit No rows are stored (studying=false, minutes null). A Yes row
+    // must carry minutes. An unanswered course stores no row at all.
+    studying: boolean("studying").notNull(),
+    minutes: smallint("minutes"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     unique("plans_participant_date_course_unique").on(t.participantCode, t.localDate, t.courseId),
     check(
       "plans_minutes_allowed",
-      sql`${t.minutes} in (0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 999)`,
+      sql`${t.minutes} in (15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 999)`,
+    ),
+    check(
+      "plans_studying_minutes_pair",
+      sql`(${t.studying} and ${t.minutes} is not null) or (not ${t.studying} and ${t.minutes} is null)`,
     ),
   ],
 );
@@ -242,4 +256,4 @@ export type Slot = typeof slots.$inferSelect;
 export type AdminUser = typeof adminUsers.$inferSelect;
 export type Checkin = typeof checkins.$inferSelect;
 export type Course = typeof courses.$inferSelect;
-export type TestDate = typeof testDates.$inferSelect;
+export type AssessmentCalendarRow = typeof assessmentCalendar.$inferSelect;

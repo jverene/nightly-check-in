@@ -8,6 +8,20 @@
       "when": 1792545311265,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1792618640445,
+      "tag": "0001_v2_plans_and_checkins",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792618760923,
+      "tag": "0002_v2_assessment_calendar",
+      "breakpoints": true
     }
   ]
 }
