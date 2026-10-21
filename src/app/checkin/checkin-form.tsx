@@ -1,28 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ChipStrip, Item, Segmented, Slider } from "./controls";
+import { Item, Segmented, Slider } from "@/components/controls";
+import { PlanningCards, emptyPlanCard, type PlanCardState } from "@/components/planning-cards";
 
 const FOOTER_TEXT =
   "This check-in is graded on completion only. Your answers are never shown to teachers and never affect your grades or workload. School counseling resources are available if you need them.";
-
-const MINUTE_OPTIONS = [
-  { value: 0, label: "0" },
-  { value: 15, label: "15" },
-  { value: 30, label: "30" },
-  { value: 45, label: "45" },
-  { value: 60, label: "1h" },
-  { value: 75, label: "1h15" },
-  { value: 90, label: "1h30" },
-  { value: 105, label: "1h45" },
-  { value: 120, label: "2h" },
-  { value: 135, label: "2h15" },
-  { value: 150, label: "2h30" },
-  { value: 165, label: "2h45" },
-  { value: 180, label: "3h" },
-  { value: 999, label: "3h+" },
-];
 
 const SLEEP_BAND_OPTIONS = [
   { value: "LT5" as const, label: "<5" },
@@ -34,6 +18,13 @@ const SLEEP_BAND_OPTIONS = [
 
 type SleepBand = (typeof SLEEP_BAND_OPTIONS)[number]["value"];
 
+type Stats = {
+  week_count: number;
+  week_total: number;
+  term_count: number;
+  class_percent: number;
+};
+
 type TodayData = {
   state: "open" | "late" | "before" | "closed";
   local_date: string | null;
@@ -42,8 +33,9 @@ type TodayData = {
   setup_complete: boolean;
   already_submitted: boolean;
   confirmation_code: string | null;
+  stats: Stats | null;
   courses: { id: string; course_name: string }[];
-  tests: { course_name: string; test_date: string; weekday: string; label: string }[];
+  prefill: Record<string, "yes" | "no">;
   existing: null | {
     stress_0_10: number | null;
     pna_stress: boolean;
@@ -59,7 +51,7 @@ type TodayData = {
       challenge_0_10: number | null;
       pna_challenge: boolean;
     };
-    plans: { course_id: string; minutes: number }[];
+    plans: { course_id: string; studying: boolean; minutes: number | null }[];
   };
 };
 
@@ -72,16 +64,26 @@ type FormState = {
   workload: Answer<number>;
   lateNights: Answer<number>;
   challenge: Answer<number>;
-  plans: Record<string, number | null>;
+  plans: Record<string, PlanCardState>;
 };
 
 const emptyAnswer = { value: null, pna: false };
 
 function initialForm(data: TodayData): FormState {
   const ex = data.existing;
-  const plans: Record<string, number | null> = {};
-  for (const c of data.courses) plans[c.id] = null;
-  if (ex) for (const p of ex.plans) plans[p.course_id] = p.minutes;
+  const plans: Record<string, PlanCardState> = {};
+  for (const c of data.courses) plans[c.id] = emptyPlanCard(data.prefill[c.id] ?? null);
+  if (ex) {
+    // Tonight's own answers are real values (touched), not prefill hints.
+    for (const p of ex.plans) {
+      plans[p.course_id] = {
+        answer: p.studying ? "yes" : "no",
+        minutes: p.minutes,
+        touched: true,
+        prefilled: null,
+      };
+    }
+  }
   return {
     stress: ex ? { value: ex.stress_0_10, pna: ex.pna_stress } : { ...emptyAnswer },
     sleepBand: ex ? { value: ex.sleep_band, pna: ex.pna_sleep } : { ...emptyAnswer },
@@ -105,6 +107,8 @@ export function CheckinForm() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmedCode, setConfirmedCode] = useState<string | null>(null);
+  const [stats, setStats] = useState<Stats | null>(null);
+  const startedAt = useRef<number>(0);
 
   useEffect(() => {
     fetch("/api/today")
@@ -113,11 +117,13 @@ export function CheckinForm() {
         setData(d);
         setForm(initialForm(d));
         setConfirmedCode(d.confirmation_code);
+        setStats(d.stats);
+        if (!d.confirmation_code) startedAt.current = Date.now();
       })
       .catch(() => setLoadError(true));
   }, []);
 
-  const answered = useCallbackAnswered(form, data);
+  const answered = useAnswered(form, data);
 
   if (loadError) {
     return <p className="error-text">Couldn&rsquo;t load tonight&rsquo;s check-in. Refresh to try again.</p>;
@@ -171,11 +177,26 @@ export function CheckinForm() {
           <h1>
             <span className="check-mark">✓</span>Submitted
           </h1>
+          {stats && (
+            <div className="stat-lines">
+              <span>
+                This week: {stats.week_count} of {stats.week_total} nights
+              </span>
+              <span>{stats.term_count} nights this term</span>
+              <span>Your class is at {stats.class_percent}% this week</span>
+            </div>
+          )}
           <div className="confirm-code">{confirmedCode}</div>
           <p className="muted small">Screenshot this code if you want proof of completion.</p>
         </div>
         {data.state === "open" && (
-          <button className="btn btn-secondary" onClick={() => setEditing(true)}>
+          <button
+            className="btn btn-secondary"
+            onClick={() => {
+              startedAt.current = Date.now();
+              setEditing(true);
+            }}
+          >
             Edit answers (until midnight)
           </button>
         )}
@@ -191,10 +212,19 @@ export function CheckinForm() {
       setError("Answer each question, or tap “Prefer not to answer” on the ones you skip.");
       return;
     }
+    const d = data!;
+    const f = form!;
+    if (d.arm === "INTERVENTION") {
+      const missingMinutes = d.courses.some(
+        (c) => f.plans[c.id]?.touched && f.plans[c.id]?.answer === "yes" && f.plans[c.id]?.minutes === null,
+      );
+      if (missingMinutes) {
+        setError("Pick a time for every Yes.");
+        return;
+      }
+    }
     setBusy(true);
     try {
-      const d = data!;
-      const f = form!;
       const payload: Record<string, unknown> = {
         local_date: d.local_date,
         stress_0_10: f.stress.value,
@@ -205,6 +235,7 @@ export function CheckinForm() {
         pna_quality: f.quality.pna,
         workload_next_3d_0_10: f.workload.value,
         pna_workload: f.workload.pna,
+        completion_seconds: Math.round((Date.now() - startedAt.current) / 1000),
       };
       if (d.is_sunday) {
         payload.weekly = {
@@ -215,9 +246,14 @@ export function CheckinForm() {
         };
       }
       if (d.arm === "INTERVENTION") {
+        // Untouched or deselected cards submit as no row (valid, unanswered).
         payload.plans = Object.entries(f.plans)
-          .filter(([, minutes]) => minutes !== null)
-          .map(([course_id, minutes]) => ({ course_id, minutes }));
+          .filter(([, s]) => s.touched && s.answer !== null)
+          .map(([course_id, s]) => ({
+            course_id,
+            studying: s.answer === "yes",
+            minutes: s.answer === "yes" ? s.minutes : null,
+          }));
       }
       const res = await fetch("/api/checkin", {
         method: "POST",
@@ -238,6 +274,7 @@ export function CheckinForm() {
         return;
       }
       setConfirmedCode(body.confirmation_code);
+      setStats(body.stats ?? null);
       setEditing(false);
       window.scrollTo({ top: 0 });
     } finally {
@@ -257,40 +294,23 @@ export function CheckinForm() {
       )}
 
       {data.arm === "INTERVENTION" && (
-        <>
-          {data.tests.length > 0 && (
-            <section className="card" aria-label="Upcoming tests">
-              {data.tests.map((t) => (
-                <Link key={t.course_name + t.test_date} className="test-line" href="/setup#tests">
-                  <span>
-                    {t.course_name} test: {t.weekday}
-                  </span>
-                  <span className="days">{t.label}</span>
-                </Link>
-              ))}
-            </section>
-          )}
-
-          <section className="card" aria-label="Tonight's plan">
-            <h2 style={{ marginBottom: 4 }}>Tonight&rsquo;s plan</h2>
-            <p className="muted small" style={{ marginBottom: 8 }}>
-              How long will you study for each course tonight?
-            </p>
-            {data.courses.map((c) => (
-              <div className="plan-row" key={c.id}>
-                <div className="plan-course">{c.course_name}</div>
-                <ChipStrip
-                  name={`plan-${c.id}`}
-                  options={MINUTE_OPTIONS}
-                  value={form.plans[c.id] ?? null}
-                  onToggle={(v) =>
-                    setForm((f) => (f ? { ...f, plans: { ...f.plans, [c.id]: v } } : f))
-                  }
-                />
-              </div>
-            ))}
-          </section>
-        </>
+        <PlanningCards
+          courses={data.courses}
+          value={form.plans}
+          onChange={(plans) => setForm((f) => (f ? { ...f, plans } : f))}
+          onSameAsYesterday={() =>
+            setForm((f) => {
+              if (!f) return f;
+              const plans = { ...f.plans };
+              for (const [id, s] of Object.entries(plans)) {
+                if (s.prefilled && !s.touched) {
+                  plans[id] = { ...s, answer: s.prefilled, touched: true };
+                }
+              }
+              return { ...f, plans };
+            })
+          }
+        />
       )}
 
       <Item
@@ -397,7 +417,7 @@ export function CheckinForm() {
   );
 }
 
-function useCallbackAnswered(form: FormState | null, data: TodayData | null): boolean {
+function useAnswered(form: FormState | null, data: TodayData | null): boolean {
   return useMemo(() => {
     if (!form || !data) return false;
     const ok = <T,>(a: Answer<T>) => a.pna !== (a.value !== null);

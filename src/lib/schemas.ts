@@ -39,16 +39,6 @@ export const staffLoginSchema = z
 export const setupSchema = z
   .object({
     courses: z.array(z.string().min(1).max(80)).max(8),
-    test_dates: z
-      .array(
-        z
-          .object({
-            course_name: z.string().min(1).max(80),
-            test_date: dateStr,
-          })
-          .strict(),
-      )
-      .max(40),
   })
   .strict();
 
@@ -69,6 +59,23 @@ const minutesEnum = z
     message: "invalid minutes value",
   });
 
+const planRow = z
+  .object({
+    course_id: z.string().uuid(),
+    studying: z.boolean(),
+    minutes: minutesEnum.nullable(),
+  })
+  .strict()
+  .superRefine((p, ctx) => {
+    // Yes must carry a fresh minutes tap; No must carry none.
+    if (p.studying && p.minutes === null) {
+      ctx.addIssue({ code: "custom", path: ["minutes"], message: "yes requires minutes" });
+    }
+    if (!p.studying && p.minutes !== null) {
+      ctx.addIssue({ code: "custom", path: ["minutes"], message: "no cannot carry minutes" });
+    }
+  });
+
 export const checkinSchema = z
   .object({
     local_date: dateStr,
@@ -80,6 +87,7 @@ export const checkinSchema = z
     pna_quality: z.boolean(),
     workload_next_3d_0_10: z.number().int().min(0).max(10).nullable(),
     pna_workload: z.boolean(),
+    completion_seconds: z.number().int(),
     weekly: z
       .object({
         late_nights_0_7: z.number().int().min(0).max(7).nullable(),
@@ -89,17 +97,7 @@ export const checkinSchema = z
       })
       .strict()
       .optional(),
-    plans: z
-      .array(
-        z
-          .object({
-            course_id: z.string().uuid(),
-            minutes: minutesEnum,
-          })
-          .strict(),
-      )
-      .max(8)
-      .optional(),
+    plans: z.array(planRow).max(8).optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
@@ -164,6 +162,25 @@ export const pushSubscribeSchema = z
 export const pushUnsubscribeSchema = z
   .object({
     endpoint: z.string().url().max(2000),
+  })
+  .strict();
+
+export const calendarEntrySchema = z
+  .object({
+    course_name: z.string().min(1).max(80),
+    section: z.string().min(1).max(80).nullable(),
+    assess_date: dateStr,
+    assess_type: z.enum(["TEST", "QUIZ", "ASSIGNMENT"]),
+  })
+  .strict();
+
+export const calendarUpdateSchema = calendarEntrySchema.extend({ id: z.string().uuid() }).strict();
+
+export const calendarDeleteSchema = z.object({ id: z.string().uuid() }).strict();
+
+export const calendarImportSchema = z
+  .object({
+    csv_text: z.string().min(1).max(200_000),
   })
   .strict();
 

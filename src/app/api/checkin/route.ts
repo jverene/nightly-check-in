@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, lt } from "drizzle-orm";
 import { db } from "@/db";
 import { checkins, confirmations, courses, plans, weeklySupplements } from "@/db/schema";
 import { requireStudent } from "@/lib/session";
 import { checkinSchema } from "@/lib/schemas";
-import { checkinWindow, isSunday, overrideNow } from "@/lib/time";
+import { checkinWindow, isSunday, overrideNow, prevSchoolNight } from "@/lib/time";
 import { generateConfirmationCode } from "@/lib/codes";
 import { rateLimit } from "@/lib/ratelimit";
+import { completionStats } from "@/lib/stats";
 
 export const dynamic = "force-dynamic";
 
@@ -44,7 +45,7 @@ export async function POST(request: Request) {
   }
 
   const arm = session.slot.arm;
-  if (payload.plans && arm !== "INTERVENTION") {
+  if (payload.plans && payload.plans.length > 0 && arm !== "INTERVENTION") {
     return NextResponse.json({ error: "plans_not_allowed" }, { status: 400 });
   }
   if (payload.weekly && !isSunday(window.localDate)) {
@@ -53,7 +54,7 @@ export async function POST(request: Request) {
 
   const database = db();
   const courseRows = await database.select().from(courses).where(eq(courses.participantCode, code));
-  if (arm === "INTERVENTION" && courseRows.length === 0) {
+  if (courseRows.length === 0) {
     return NextResponse.json({ error: "setup_required" }, { status: 400 });
   }
   if (payload.plans && payload.plans.length > 0) {
@@ -65,9 +66,34 @@ export async function POST(request: Request) {
 
   const localDate = window.localDate;
   const late = window.state === "late";
+  const completionSeconds = Math.max(0, Math.min(3600, Math.round(payload.completion_seconds)));
 
-  // Upsert the wellbeing core.
-  const wellbeing = {
+  // rows_changed: submitted course rows whose Yes/No state differs from the
+  // prefill hint (the most recent prior night's answers).
+  let rowsChanged = 0;
+  if (arm === "INTERVENTION") {
+    const latest = await database
+      .select({ localDate: plans.localDate })
+      .from(plans)
+      .where(and(eq(plans.participantCode, code), lt(plans.localDate, localDate)))
+      .orderBy(desc(plans.localDate))
+      .limit(1);
+    if (latest[0]) {
+      const priorRows = await database
+        .select({ courseId: plans.courseId, studying: plans.studying })
+        .from(plans)
+        .where(and(eq(plans.participantCode, code), eq(plans.localDate, latest[0].localDate)));
+      const prefill = new Map(priorRows.map((r) => [r.courseId, r.studying]));
+      for (const p of payload.plans ?? []) {
+        const hint = prefill.get(p.course_id);
+        if (hint !== undefined && hint !== p.studying) rowsChanged++;
+      }
+    }
+  }
+
+  // Data-quality flags. Never surfaced in any UI; export-only signals.
+  const flagFast = completionSeconds < 5;
+  const tuple = {
     stress010: payload.stress_0_10,
     sleepBand: payload.sleep_band,
     sleepQuality: payload.sleep_quality,
@@ -76,6 +102,36 @@ export async function POST(request: Request) {
     pnaSleep: payload.pna_sleep,
     pnaQuality: payload.pna_quality,
     pnaWorkload: payload.pna_workload,
+  };
+  const prev1 = prevSchoolNight(localDate);
+  const prev2 = prevSchoolNight(prev1);
+  const priorTwo = await database
+    .select()
+    .from(checkins)
+    .where(and(eq(checkins.participantCode, code), inArray(checkins.localDate, [prev1, prev2])));
+  // Flat: identical wellbeing tuple on 3+ consecutive school nights (tonight
+  // plus the previous two). pna flags are part of the tuple.
+  const flagFlat =
+    priorTwo.length === 2 &&
+    priorTwo.every(
+      (r) =>
+        r.stress010 === tuple.stress010 &&
+        r.sleepBand === tuple.sleepBand &&
+        r.sleepQuality === tuple.sleepQuality &&
+        r.workloadNext3d010 === tuple.workloadNext3d010 &&
+        r.pnaStress === tuple.pnaStress &&
+        r.pnaSleep === tuple.pnaSleep &&
+        r.pnaQuality === tuple.pnaQuality &&
+        r.pnaWorkload === tuple.pnaWorkload,
+    );
+
+  // Upsert the wellbeing core.
+  const wellbeing = {
+    ...tuple,
+    completionSeconds,
+    rowsChanged,
+    flagFast,
+    flagFlat,
   };
   await database
     .insert(checkins)
@@ -113,7 +169,8 @@ export async function POST(request: Request) {
           participantCode: code,
           localDate,
           courseId: p.course_id,
-          minutes: p.minutes,
+          studying: p.studying,
+          minutes: p.studying ? p.minutes : null,
         })),
       );
     }
@@ -143,5 +200,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "confirmation_failed" }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, confirmation_code: confirmationCode, local_date: localDate, late });
+  const stats = await completionStats(code, session.slot.classSection, localDate);
+  return NextResponse.json({
+    ok: true,
+    confirmation_code: confirmationCode,
+    local_date: localDate,
+    late,
+    stats,
+  });
 }

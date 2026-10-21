@@ -1,16 +1,10 @@
 import { NextResponse } from "next/server";
-import { and, asc, eq, gte } from "drizzle-orm";
+import { and, desc, eq, lt } from "drizzle-orm";
 import { db } from "@/db";
-import { checkins, confirmations, courses, plans, testDates, weeklySupplements } from "@/db/schema";
+import { checkins, confirmations, courses, plans, weeklySupplements } from "@/db/schema";
 import { requireStudent } from "@/lib/session";
-import {
-  checkinWindow,
-  daysUntilLabel,
-  isSunday,
-  overrideNow,
-  todayLocal,
-  weekdayName,
-} from "@/lib/time";
+import { checkinWindow, isSunday, overrideNow } from "@/lib/time";
+import { completionStats } from "@/lib/stats";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +20,8 @@ export async function GET(request: Request) {
   const database = db();
 
   const courseRows = await database.select().from(courses).where(eq(courses.participantCode, code));
-  const setupComplete = arm === "CONTROL" || courseRows.length > 0;
+  // Both arms complete the same minimal course setup before checking in.
+  const setupComplete = courseRows.length > 0;
 
   const base = {
     state: window.state,
@@ -36,27 +31,16 @@ export async function GET(request: Request) {
     setup_complete: setupComplete,
     already_submitted: false,
     confirmation_code: null as string | null,
+    stats: null as null | Awaited<ReturnType<typeof completionStats>>,
     courses: [] as { id: string; course_name: string }[],
-    tests: [] as { course_name: string; test_date: string; weekday: string; label: string }[],
+    // Yes/No prefill from the most recent night with plan rows. Minutes are
+    // never prefilled — every Yes requires a fresh tap each night.
+    prefill: {} as Record<string, "yes" | "no">,
     existing: null as null | Record<string, unknown>,
   };
 
   if (arm === "INTERVENTION") {
     base.courses = courseRows.map((c) => ({ id: c.id, course_name: c.courseName }));
-    const referenceDate = window.localDate ?? todayLocal(now);
-    const testRows = await database
-      .select({ testDate: testDates.testDate, courseName: courses.courseName })
-      .from(testDates)
-      .innerJoin(courses, eq(testDates.courseId, courses.id))
-      .where(and(eq(testDates.participantCode, code), gte(testDates.testDate, referenceDate)))
-      .orderBy(asc(testDates.testDate))
-      .limit(5);
-    base.tests = testRows.map((t) => ({
-      course_name: t.courseName,
-      test_date: t.testDate,
-      weekday: weekdayName(t.testDate),
-      label: daysUntilLabel(t.testDate, referenceDate),
-    }));
   }
 
   if (window.state !== "open" && window.state !== "late") {
@@ -92,6 +76,7 @@ export async function GET(request: Request) {
   const confirmation = confirmationRows[0];
   base.already_submitted = !!confirmation;
   base.confirmation_code = confirmation?.confirmationCode ?? null;
+  base.stats = await completionStats(code, session.slot.classSection, localDate);
 
   if (checkin) {
     const weekly = weeklyRows[0];
@@ -112,8 +97,23 @@ export async function GET(request: Request) {
             pna_challenge: weekly.pnaChallenge,
           }
         : null,
-      plans: planRows.map((p) => ({ course_id: p.courseId, minutes: p.minutes })),
+      plans: planRows.map((p) => ({ course_id: p.courseId, studying: p.studying, minutes: p.minutes })),
     };
+  } else if (arm === "INTERVENTION" && courseRows.length > 0) {
+    // Prefill Yes/No from the most recent prior night that has plan rows.
+    const latest = await database
+      .select({ localDate: plans.localDate })
+      .from(plans)
+      .where(and(eq(plans.participantCode, code), lt(plans.localDate, localDate)))
+      .orderBy(desc(plans.localDate))
+      .limit(1);
+    if (latest[0]) {
+      const priorRows = await database
+        .select({ courseId: plans.courseId, studying: plans.studying })
+        .from(plans)
+        .where(and(eq(plans.participantCode, code), eq(plans.localDate, latest[0].localDate)));
+      for (const r of priorRows) base.prefill[r.courseId] = r.studying ? "yes" : "no";
+    }
   }
 
   return NextResponse.json(base);

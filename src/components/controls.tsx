@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * Form controls. Segmented groups and chips are real radio inputs underneath,
- * so keyboard navigation and focus rings come for free.
+ * Form controls. Segmented groups are real radio inputs underneath, so
+ * keyboard navigation and focus rings come for free.
  */
 
 export function Item({
@@ -42,6 +42,7 @@ export function Slider({
   max = 10,
   min = 0,
   name,
+  onCommit,
 }: {
   value: number | null;
   onChange: (v: number) => void;
@@ -50,9 +51,16 @@ export function Slider({
   max?: number;
   min?: number;
   name: string;
+  /** Fired when a pointer interaction commits a value (tap/drag release) or Enter is pressed. Used by the demo wizard for auto-advance. */
+  onCommit?: () => void;
 }) {
   return (
-    <div className="slider-wrap">
+    <div
+      className="slider-wrap"
+      onPointerUp={() => {
+        if (value !== null) onCommit?.();
+      }}
+    >
       <div className="slider-value" aria-live="polite">
         {value === null ? <span className="unset">Slide to answer</span> : value}
       </div>
@@ -65,6 +73,12 @@ export function Slider({
         step={1}
         value={value ?? min}
         onChange={(e) => onChange(Number(e.target.value))}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && value !== null) {
+            e.preventDefault();
+            onCommit?.();
+          }
+        }}
       />
       <div className="slider-ends">
         <span>
@@ -112,38 +126,6 @@ export function Segmented<T extends string | number>({
           <span>{endpoints[1]}</span>
         </div>
       )}
-    </div>
-  );
-}
-
-export function ChipStrip({
-  options,
-  value,
-  onToggle,
-  name,
-}: {
-  options: { value: number; label: string }[];
-  value: number | null;
-  onToggle: (v: number | null) => void;
-  name: string;
-}) {
-  return (
-    <div className="chip-strip" role="radiogroup" aria-label={name}>
-      {options.map((o) => (
-        <label key={o.value}>
-          <input
-            type="radio"
-            name={name}
-            checked={value === o.value}
-            onChange={() => onToggle(o.value)}
-            onClick={() => {
-              // Tapping the selected chip again deselects it (row returns to unanswered).
-              if (value === o.value) onToggle(null);
-            }}
-          />
-          <span className="chip">{o.label}</span>
-        </label>
-      ))}
     </div>
   );
 }

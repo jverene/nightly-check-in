@@ -465,6 +465,27 @@ input[type="range"].slider::-moz-range-thumb {
   outline-offset: 2px;
 }
 
+/*
+ * Minutes picker: a wrapping grid so every duration is visible at once. The
+ * strip above hides its scrollbar, which left nothing to drag on a desktop
+ * and no way to reach the last chips on a phone.
+ */
+.chip-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
+  gap: 6px;
+  padding-bottom: 0;
+  overflow: visible;
+}
+
+.chip-grid label {
+  flex-shrink: 0;
+}
+
+.chip-grid .chip {
+  width: 100%;
+}
+
 /* ---------- test header ---------- */
 
 .test-line {
@@ -490,6 +511,82 @@ input[type="range"].slider::-moz-range-thumb {
 
 .test-line:hover .days {
   color: var(--text);
+}
+
+/* ---------- plan Yes/No cards ---------- */
+
+.yn-card {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.yn-card:last-child {
+  border-bottom: none;
+}
+
+.yn-course {
+  font-size: 15px;
+  font-weight: 500;
+  margin-bottom: 10px;
+}
+
+.yn-row {
+  display: flex;
+  gap: 8px;
+}
+
+.yn-btn {
+  flex: 1;
+  min-height: 48px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 100ms, color 100ms, border-color 100ms;
+}
+
+.yn-btn.selected {
+  background: var(--text);
+  color: #ffffff;
+  border-color: var(--text);
+}
+
+.yn-btn.prefilled {
+  background: var(--fill);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.yn-card .chip-strip {
+  margin-top: 10px;
+}
+
+/* ---------- success stats ---------- */
+
+.stat-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--secondary);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.demo-label {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--secondary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 /* ---------- footer ---------- */
