@@ -8,17 +8,26 @@ import { rateLimit } from "@/lib/ratelimit";
 
 export const dynamic = "force-dynamic";
 
-const TABLES = ["checkins", "weekly_supplements", "plans", "test_dates", "confirmations"] as const;
+const TABLES = ["checkins", "weekly_supplements", "plans", "confirmations", "assessment_calendar"] as const;
 type ExportTable = (typeof TABLES)[number];
 
-// Date column used for range filtering per table; test_dates exports in full
-// because the test calendar is needed to derive study lead-time.
+// Date column used for range filtering per table. assessment_calendar is
+// class-level data entered by the sponsor: always exported in full.
 const DATE_COLUMN: Record<ExportTable, string | null> = {
   checkins: "local_date",
   weekly_supplements: "week_start_date",
   plans: "local_date",
-  test_dates: null,
   confirmations: "local_date",
+  assessment_calendar: null,
+};
+
+// Student tables are consent-filtered; the class calendar is not student data.
+const CONSENT_FILTERED: Record<ExportTable, boolean> = {
+  checkins: true,
+  weekly_supplements: true,
+  plans: true,
+  confirmations: true,
+  assessment_calendar: false,
 };
 
 /**
@@ -43,11 +52,18 @@ async function exportTable(
     dateCol && (from || to)
       ? sql` and ${sql.raw(dateCol)} between ${from ?? "0001-01-01"} and ${to ?? "9999-12-31"}`
       : sql``;
-  const orderCol = dateCol ?? "created_at";
+  const consentClause = CONSENT_FILTERED[table] ? sql`where ${CONSENT_FILTER} ${range}` : sql``;
+  const orderCol =
+    table === "assessment_calendar"
+      ? "assess_date"
+      : (dateCol ?? "created_at");
+  const orderClause = CONSENT_FILTERED[table]
+    ? sql`order by participant_code, ${sql.raw(orderCol)}`
+    : sql`order by ${sql.raw(orderCol)}`;
   const rows = await db().execute(sql`
     select * from ${sql.raw(table)}
-    where ${CONSENT_FILTER} ${range}
-    order by participant_code, ${sql.raw(orderCol)}
+    ${consentClause}
+    ${orderClause}
   `);
   return rows as unknown as Record<string, unknown>[];
 }
