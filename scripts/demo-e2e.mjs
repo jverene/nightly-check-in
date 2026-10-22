@@ -162,12 +162,21 @@ try {
   check("week stat shows", finalText.includes("This week: 3 of 5 nights"));
   check("no class-percentage line", !finalText.includes("Your class is at"));
 
-  // Back must retrace the pages actually shown, in reverse order. "Same as
-  // yesterday" jumps from course 1 straight to Biology, so one press of Back
-  // has to land on course 1 — not on the courses auto-advance skipped.
+  // Back walks the fixed page order, one page at a time. "Same as yesterday"
+  // jumps from course 1 to Biology, so Back has to pass through English and
+  // Data Management before it reaches course 1 again.
   const heading = () => page.evaluate(() => document.querySelector("h1")?.textContent?.trim() ?? "");
   const clickBack = () =>
     page.evaluate(() => [...document.querySelectorAll("button")].find((b) => b.textContent.includes("Back"))?.click());
+  const waitHeading = (name) =>
+    page
+      .waitForFunction(
+        (expected) => document.querySelector("h1")?.textContent?.trim() === expected,
+        { timeout: 2000 },
+        name,
+      )
+      .catch(() => {});
+
   await page.goto(`${BASE}/demo`, { waitUntil: "networkidle0" });
   await page.waitForSelector(".yn-btn", { timeout: 5000 });
   await page.evaluate(() =>
@@ -178,28 +187,44 @@ try {
     const chip = [...document.querySelectorAll(".chip-strip .chip")].find((c) => c.textContent === "30");
     chip?.click();
   });
-  await page.waitForFunction(() => document.body.innerText.includes("Biology"), { timeout: 2000 }).catch(() => {});
+  await waitHeading("Biology");
   check("same-as-yesterday lands on Biology", (await heading()) === "Biology", await heading());
+
   await clickBack();
-  await page.waitForFunction(() => document.body.innerText.includes("AP Statistics"), { timeout: 2000 }).catch(() => {});
-  check("Back returns to the page actually shown (course 1)", (await heading()) === "AP Statistics", await heading());
+  await waitHeading("English");
+  check("Back steps to the previous course (English)", (await heading()) === "English", await heading());
+  await clickBack();
+  await waitHeading("Data Management");
+  check("Back keeps course order (Data Management)", (await heading()) === "Data Management", await heading());
+  await clickBack();
+  await waitHeading("AP Statistics");
+  check("Back reaches course 1", (await heading()) === "AP Statistics", await heading());
   check(
     "no Back button on the first page",
     !(await page.evaluate(() => [...document.querySelectorAll("button")].some((b) => b.textContent.includes("Back")))),
   );
 
-  // The browser's own back button walks the wizard instead of leaving /demo.
+  // Browser back follows the same order: from the stress slider it lands on
+  // French, the page before it, not on whatever page was visited last.
   await page.evaluate(() => {
     const chip = [...document.querySelectorAll(".chip-strip .chip")].find((c) => c.textContent === "45");
     chip?.click();
   });
+  await waitHeading("Biology");
+  await page.evaluate(() => {
+    const chip = [...document.querySelectorAll(".chip-strip .chip")].find((c) => c.textContent === "1h");
+    chip?.click();
+  });
   await page.waitForFunction(() => document.body.innerText.includes("stressed"), { timeout: 2000 }).catch(() => {});
+  check("minutes answer lands on the stress slider", (await text()).includes("stressed"), await text());
+
   await page.goBack();
   await new Promise((r) => setTimeout(r, 300));
   check("stays on /demo after browser back", page.url().endsWith("/demo"), page.url());
-  // The last history entry before the sliders was the page the in-app Back
-  // returned to, so that is what the browser restores.
-  check("browser back restores the previous page", (await heading()) === "AP Statistics", await heading());
+  check("browser back walks the fixed order (French)", (await heading()) === "French", await heading());
+  await page.goForward();
+  await new Promise((r) => setTimeout(r, 300));
+  check("browser forward returns to the slider", (await text()).includes("stressed"), await text());
 
   check("no console/page errors", consoleErrors.length === 0, consoleErrors.slice(0, 3));
 } finally {

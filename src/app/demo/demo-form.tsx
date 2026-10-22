@@ -87,9 +87,6 @@ export function DemoForm() {
   const [done, setDone] = useState<{ code: string; seconds: number } | null>(null);
   const startedAt = useRef<number>(Date.now());
   const containerRef = useRef<HTMLDivElement>(null);
-  // The pages this session actually showed, so Back retraces the real path
-  // instead of stepping through pages that auto-advance skipped over.
-  const visited = useRef<number[]>([]);
 
   const wellbeingOk = useMemo(() => {
     const ok = <T,>(a: Answer<T>) => a.pna !== (a.value !== null);
@@ -106,24 +103,16 @@ export function DemoForm() {
     el?.focus();
   }, [step]);
 
-  // Give every page its own history entry so the browser's back button walks
-  // the wizard instead of leaving the demo. The state guard keeps a popstate
-  // navigation from pushing a duplicate entry for the page it just restored.
+  // Every page owns one history entry, so the browser back button walks the
+  // same fixed order as the in-app one instead of leaving the demo.
   useEffect(() => {
     window.history.replaceState({ ...(window.history.state ?? {}), demoStep: 0 }, "");
   }, []);
 
   useEffect(() => {
-    if ((window.history.state as { demoStep?: number } | null)?.demoStep === step) return;
-    window.history.pushState({ ...(window.history.state ?? {}), demoStep: step }, "");
-  }, [step]);
-
-  useEffect(() => {
     function onPop(e: PopStateEvent) {
       const restored = (e.state as { demoStep?: number } | null)?.demoStep;
       if (typeof restored !== "number") return;
-      visited.current = Array.from({ length: restored }, (_, i) => i);
-      setError(null);
       setStep(restored);
     }
     window.addEventListener("popstate", onPop);
@@ -150,25 +139,32 @@ export function DemoForm() {
     return STEP_SUBMIT;
   }
 
-  /** Move to a page, remembering the one we came from. */
-  function go(next: number) {
-    if (next === step) return;
-    // Same-tick double fires (a slider commit followed by its change event)
-    // must not record the same page twice, or Back would stall on it.
-    if (visited.current[visited.current.length - 1] !== step) visited.current.push(step);
-    setStep(next);
+  /**
+   * Move to a page in the wizard's fixed order. Forward moves push an entry
+   * for every page they pass, so Back always lands on the page before the one
+   * on screen — course by course — rather than on the last page visited.
+   */
+  function goTo(target: number) {
+    if (target === step) return;
+    if (target > step) {
+      for (let s = step + 1; s <= target; s++) {
+        window.history.pushState({ ...(window.history.state ?? {}), demoStep: s }, "");
+      }
+      setStep(target);
+      return;
+    }
+    window.history.go(target - step);
   }
 
-  /** Back retraces the pages that were actually shown, in reverse. */
+  /** Back is one page earlier in the fixed order, whatever was visited. */
   function back() {
     setError(null);
-    const prev = visited.current.pop();
-    setStep(prev ?? Math.max(step - 1, 0));
+    goTo(Math.max(step - 1, 0));
   }
 
   function advance() {
     setError(null);
-    go(nextUnanswered(step));
+    goTo(nextUnanswered(step));
   }
 
   function selectCourse(id: string, side: "yes" | "no") {
@@ -202,7 +198,7 @@ export function DemoForm() {
     const needsMinutes = DEMO_COURSES.findIndex(
       (c) => next[c.id]?.touched && next[c.id]?.answer === "yes" && next[c.id]?.minutes === null,
     );
-    go(needsMinutes >= 0 ? needsMinutes : STEP_STRESS);
+    goTo(needsMinutes >= 0 ? needsMinutes : STEP_STRESS);
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
@@ -257,9 +253,7 @@ export function DemoForm() {
         [stress, sleepBand, quality, workload].findIndex((a) => a.pna === (a.value !== null)) +
         STEP_STRESS;
       setError("Answer this, or tap “Prefer not to answer”.");
-      // A validation jump restarts the trail: Back from here goes one page up.
-      visited.current = Array.from({ length: firstBad }, (_, i) => i);
-      setStep(firstBad);
+      goTo(firstBad);
       return;
     }
     const badPlan = DEMO_COURSES.findIndex(
@@ -267,8 +261,7 @@ export function DemoForm() {
     );
     if (badPlan >= 0) {
       setError("Pick a time for this Yes.");
-      visited.current = Array.from({ length: badPlan }, (_, i) => i);
-      setStep(badPlan);
+      goTo(badPlan);
       return;
     }
     setError(null);
@@ -291,7 +284,8 @@ export function DemoForm() {
     setWorkload(emptyAnswer());
     setError(null);
     setDone(null);
-    visited.current = [];
+    // Walk the history entries back to the first page as well.
+    window.history.go(-step);
     setStep(0);
     startedAt.current = Date.now();
     window.scrollTo({ top: 0 });
