@@ -1,11 +1,12 @@
 import { redirect } from "next/navigation";
-import { getSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
-export default async function Home() {
-  const session = await getSession();
-  if (session?.kind === "student") redirect("/checkin");
-  if (session?.kind === "staff") redirect(session.admin.role === "SPONSOR" ? "/admin" : "/roster");
-  redirect("/login");
+/**
+ * The public demo is the landing page for now: anyone who opens the app sees
+ * the nightly flow instead of a login screen. Students and staff still reach
+ * their own pages through /login.
+ */
+export default function Home() {
+  redirect("/demo");
 }
