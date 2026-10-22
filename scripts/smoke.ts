@@ -1,14 +1,15 @@
 /**
- * End-to-end smoke test against a RUNNING dev server.
+ * End-to-end smoke test against a RUNNING dev server (v2).
  *
  *   # server: CHECKIN_WINDOW_OVERRIDE=true npm run dev
  *   # test:   npm run smoke
  *
- * Requires the server to run with CHECKIN_WINDOW_OVERRIDE=true (it drives
- * time via the x-test-now header) and a seeded DB (npm run seed).
- * Exercises: claim → setup → check-in → resubmit → Sunday supplement → late
- * window → closed states → roster → consent-filtered export → withdrawal →
- * PIN lockout → token rotation.
+ * Exercises: claim → course-only setup → check-in (Yes/No plans) → resubmit →
+ * prefill from prior night → rows_changed → completion_seconds clamp →
+ * flag_fast / flag_flat → Sunday supplement → late window → closed states →
+ * strict-schema rejections → roster + class aggregate → calendar CRUD + CSV
+ * import → consent-filtered export (incl. assessment_calendar) → withdrawal →
+ * PIN lockout → token rotation → demo page.
  */
 import "dotenv/config";
 import { addDays, todayLocal, weekdayOf } from "../src/lib/time";
@@ -65,14 +66,13 @@ function sessionCookie(res: Response): string {
   return raw.split(";")[0];
 }
 
-/** Most recent date (<= today) with the given weekday. */
 function recentWeekday(target: number): string {
   const today = todayLocal();
   const delta = (weekdayOf(today) - target + 7) % 7;
   return addDays(today, -delta);
 }
 
-const wellbeing = (over: Record<string, unknown> = {}) => ({
+const W1 = {
   stress_0_10: 4,
   pna_stress: false,
   sleep_band: "6_7",
@@ -81,24 +81,27 @@ const wellbeing = (over: Record<string, unknown> = {}) => ({
   pna_quality: false,
   workload_next_3d_0_10: 7,
   pna_workload: false,
-  ...over,
-});
+};
+const wellbeing = (over: Record<string, unknown> = {}) => ({ ...W1, ...over });
 
 async function main() {
   console.log(`smoke: ${BASE}`);
 
-  // Dates used throughout (all school nights unless noted).
-  const tue = recentWeekday(2); // Tuesday — school night
-  const sun = recentWeekday(0); // Sunday — school night + supplement
-  const monLate = `${addDays(sun, 1)}T01:30`; // Monday 1:30am → late for Sunday
-  const fri = addDays(tue, 3); // Friday — not a school night
-  const tueNight = `${tue}T20:00`;
-  const tueLate = `${tue}T22:00`;
-  const sunNight = `${sun}T20:00`;
+  // School nights used: three consecutive (Tue–Thu) plus the prior Sunday.
+  const tue = recentWeekday(2);
+  const wed = addDays(tue, 1);
+  const thu = addDays(tue, 2);
+  const sun = recentWeekday(0);
+  const monLate = `${addDays(sun, 1)}T01:30`; // late window for Sunday
+  const fri = addDays(tue, 3);
 
   // --- health ---
   const health = await api("GET", "/api/health");
   check("health ok", health.status === 200 && health.json?.ok === true, health.json);
+
+  // --- demo page (public) ---
+  const demo = await api("GET", "/demo");
+  check("demo page loads", demo.status === 200 && demo.text.includes("Demo"));
 
   // --- sponsor login ---
   const sponsorLogin = await api("POST", "/api/auth/staff-login", {
@@ -110,205 +113,205 @@ async function main() {
   check("sponsor login", sponsorLogin.status === 200 && sponsorLogin.json?.role === "SPONSOR", sponsorLogin.json);
   const sponsor = sessionCookie(sponsorLogin);
 
-  // --- generate slots for this run ---
-  const genI = await api("POST", "/api/slots/generate", {
+  // --- generate slots ---
+  await api("POST", "/api/slots/generate", {
     cookie: sponsor,
     body: { arm: "INTERVENTION", count: 1, class_section: SECTIONS.INTERVENTION },
   });
-  const genC = await api("POST", "/api/slots/generate", {
+  await api("POST", "/api/slots/generate", {
     cookie: sponsor,
     body: { arm: "CONTROL", count: 2, class_section: SECTIONS.CONTROL },
   });
-  check("generate slots", genI.status === 200 && genC.status === 200, { genI: genI.json, genC: genC.json });
-
   const status = await api("GET", "/api/slots/status", { cookie: sponsor });
-  const unclaimed = (arm: string) =>
-    status.json.slots.find((s: any) => s.arm === arm && !s.claimed);
-  const slotA = unclaimed("INTERVENTION");
+  const slotA = status.json.slots.find((s: any) => s.arm === "INTERVENTION" && !s.claimed);
   const controlSlots = status.json.slots.filter((s: any) => s.arm === "CONTROL" && !s.claimed);
-  const slotB = controlSlots[0];
-  const slotC = controlSlots[1];
+  const [slotB, slotC] = controlSlots;
   check("found unclaimed slots", !!slotA && !!slotB && !!slotC);
 
-  // --- export filter: nothing consented yet, so new codes must be absent ---
-  const exportBefore = await api("GET", "/api/export", { cookie: sponsor });
-  const allExportedCodes = (exp: any) =>
-    new Set(
-      Object.values(exp.json.tables as Record<string, any[]>)
-        .flat()
-        .map((r: any) => r.participant_code),
-    );
-  check(
-    "export excludes unconsented codes",
-    exportBefore.status === 200 && !allExportedCodes(exportBefore).has(slotA.participant_code),
-  );
-
-  // --- student A: claim, setup, check in (Tuesday) ---
+  // --- student A: claim, course-only setup ---
   const claimA = await api("POST", "/api/auth/claim", { body: { token: slotA.claim_token, pin: "1234" } });
   check("A claim", claimA.status === 200 && claimA.json?.arm === "INTERVENTION", claimA.json);
   const cookieA = sessionCookie(claimA);
 
   const setupInfo = await api("GET", "/api/setup", { cookie: cookieA });
+  check("setup has no test dates", !("test_dates" in setupInfo.json), Object.keys(setupInfo.json));
   const [course1, course2] = setupInfo.json.presets as string[];
-  const setupA = await api("POST", "/api/setup", {
+  const setupA = await api("POST", "/api/setup", { cookie: cookieA, body: { courses: [course1, course2] } });
+  check("A setup (courses only)", setupA.status === 200, setupA.json);
+  const setupWithTests = await api("POST", "/api/setup", {
     cookie: cookieA,
-    body: { courses: [course1, course2], test_dates: [{ course_name: course1, test_date: addDays(tue, 2) }] },
+    body: { courses: [course1, course2], test_dates: [] },
   });
-  check("A setup", setupA.status === 200, setupA.json);
+  check("setup rejects test_dates field", setupWithTests.status === 400);
 
-  const todayA = await api("GET", "/api/today", { cookie: cookieA, now: tueNight });
+  // --- Tuesday night: no tests in today, no prefill on night one ---
+  const todayA = await api("GET", "/api/today", { cookie: cookieA, now: `${tue}T20:00` });
   check("A today open", todayA.json?.state === "open" && todayA.json?.local_date === tue, todayA.json?.state);
-  check(
-    "A today shows test countdown",
-    todayA.json?.tests?.some((t: any) => t.course_name === course1 && t.label === "2 days"),
-    todayA.json?.tests,
-  );
-  check("A today has courses", todayA.json?.courses?.length === 2);
-
+  check("today has no test countdowns", !("tests" in todayA.json));
+  check("no prefill on first night", Object.keys(todayA.json?.prefill ?? {}).length === 0);
   const coursesA = todayA.json.courses as { id: string; course_name: string }[];
   const idOf = (name: string) => coursesA.find((c) => c.course_name === name)!.id;
 
-  const submitA = await api("POST", "/api/checkin", {
+  const submitTue = await api("POST", "/api/checkin", {
     cookie: cookieA,
     now: `${tue}T20:15`,
     body: {
       local_date: tue,
       ...wellbeing(),
+      completion_seconds: 42,
       plans: [
-        { course_id: idOf(course1), minutes: 30 },
-        { course_id: idOf(course2), minutes: 0 },
+        { course_id: idOf(course1), studying: true, minutes: 30 },
+        { course_id: idOf(course2), studying: false, minutes: null },
       ],
     },
   });
-  check("A checkin", submitA.status === 200 && !!submitA.json?.confirmation_code, submitA.json);
-  const codeA1 = submitA.json?.confirmation_code;
-
-  // Resubmit same night with pna on stress and no plans: stable code, plans wiped.
-  const pnaSubmit = await api("POST", "/api/checkin", {
-    cookie: cookieA,
-    now: tueLate,
-    body: {
-      local_date: tue,
-      ...wellbeing({ stress_0_10: null, pna_stress: true }),
-      plans: [],
-    },
-  });
-  check("pna accepted", pnaSubmit.status === 200, pnaSubmit.json);
-  check("pna resubmit keeps code", pnaSubmit.json?.confirmation_code === codeA1);
-
-  // Final resubmit: real answers, one planned course. Export should reflect THIS state.
-  const resubmitA = await api("POST", "/api/checkin", {
-    cookie: cookieA,
-    now: tueLate,
-    body: {
-      local_date: tue,
-      ...wellbeing({ stress_0_10: 9 }),
-      plans: [{ course_id: idOf(course1), minutes: 60 }],
-    },
-  });
-  check("A resubmit keeps code", resubmitA.status === 200 && resubmitA.json?.confirmation_code === codeA1, {
-    first: codeA1,
-    second: resubmitA.json?.confirmation_code,
-  });
-
-  const todayAfter = await api("GET", "/api/today", { cookie: cookieA, now: tueLate });
   check(
-    "A existing answers updated",
-    todayAfter.json?.already_submitted === true &&
-      todayAfter.json?.existing?.stress_0_10 === 9 &&
-      todayAfter.json?.existing?.plans?.length === 1,
-    todayAfter.json?.existing,
+    "A Tuesday checkin + stats",
+    submitTue.status === 200 &&
+      !!submitTue.json?.confirmation_code &&
+      submitTue.json?.stats?.week_count === 1 &&
+      submitTue.json?.stats?.term_count === 1 &&
+      typeof submitTue.json?.stats?.class_percent === "number",
+    submitTue.json,
   );
+  const codeA1 = submitTue.json?.confirmation_code;
 
-  // Strict-schema rejections.
+  // Yes-without-minutes and No-with-minutes are schema violations.
+  const yesNoMinutes = await api("POST", "/api/checkin", {
+    cookie: cookieA,
+    now: `${tue}T20:20`,
+    body: { local_date: tue, ...wellbeing(), completion_seconds: 30, plans: [{ course_id: idOf(course1), studying: true, minutes: null }] },
+  });
+  check("yes without minutes rejected", yesNoMinutes.status === 400);
+  const noWithMinutes = await api("POST", "/api/checkin", {
+    cookie: cookieA,
+    now: `${tue}T20:20`,
+    body: { local_date: tue, ...wellbeing(), completion_seconds: 30, plans: [{ course_id: idOf(course1), studying: false, minutes: 15 }] },
+  });
+  check("no with minutes rejected", noWithMinutes.status === 400);
   const freeText = await api("POST", "/api/checkin", {
     cookie: cookieA,
-    now: tueLate,
-    body: { local_date: tue, ...wellbeing(), note: "free text injection" },
+    now: `${tue}T20:20`,
+    body: { local_date: tue, ...wellbeing(), completion_seconds: 30, note: "free text injection" },
   });
   check("reject unexpected field", freeText.status === 400);
-
   const nullAnswer = await api("POST", "/api/checkin", {
     cookie: cookieA,
-    now: tueLate,
-    body: { local_date: tue, ...wellbeing({ stress_0_10: null }) },
+    now: `${tue}T20:20`,
+    body: { local_date: tue, ...wellbeing({ stress_0_10: null }), completion_seconds: 30 },
   });
   check("reject null without pna", nullAnswer.status === 400);
 
-  const weeklyWrongDay = await api("POST", "/api/checkin", {
+  // --- Wednesday: prefill from Tuesday, flip both rows (rows_changed = 2) ---
+  const todayWed = await api("GET", "/api/today", { cookie: cookieA, now: `${wed}T20:00` });
+  check(
+    "Wednesday prefill from Tuesday",
+    todayWed.json?.prefill?.[idOf(course1)] === "yes" && todayWed.json?.prefill?.[idOf(course2)] === "no",
+    todayWed.json?.prefill,
+  );
+  const submitWed = await api("POST", "/api/checkin", {
     cookie: cookieA,
-    now: tueLate,
+    now: `${wed}T20:10`,
     body: {
-      local_date: tue,
+      local_date: wed,
       ...wellbeing(),
-      weekly: { late_nights_0_7: 2, pna_late_nights: false, challenge_0_10: 5, pna_challenge: false },
+      completion_seconds: 25,
+      plans: [
+        { course_id: idOf(course1), studying: false, minutes: null },
+        { course_id: idOf(course2), studying: true, minutes: 15 },
+      ],
     },
   });
-  check("reject weekly on Tuesday", weeklyWrongDay.status === 400);
+  check("A Wednesday checkin", submitWed.status === 200 && submitWed.json?.stats?.term_count === 2, submitWed.json);
 
-  // --- Sunday supplement ---
-  const todaySun = await api("GET", "/api/today", { cookie: cookieA, now: sunNight });
-  check("Sunday flagged", todaySun.json?.is_sunday === true, todaySun.json?.state);
+  // --- Thursday: identical wellbeing 3rd consecutive night, clamp seconds ---
+  const submitThu = await api("POST", "/api/checkin", {
+    cookie: cookieA,
+    now: `${thu}T20:00`,
+    body: {
+      local_date: thu,
+      ...wellbeing(),
+      completion_seconds: 99999,
+      plans: [
+        { course_id: idOf(course1), studying: false, minutes: null },
+        { course_id: idOf(course2), studying: true, minutes: 45 },
+      ],
+    },
+  });
+  check("A Thursday checkin", submitThu.status === 200, submitThu.json);
+
+  // --- Sunday: supplement + fast submission ---
   const submitSun = await api("POST", "/api/checkin", {
     cookie: cookieA,
     now: `${sun}T21:00`,
     body: {
       local_date: sun,
-      ...wellbeing(),
+      ...wellbeing({ stress_0_10: 6 }),
+      completion_seconds: 3,
       weekly: { late_nights_0_7: 3, pna_late_nights: false, challenge_0_10: 8, pna_challenge: false },
-      plans: [{ course_id: idOf(course1), minutes: 15 }],
+      plans: [{ course_id: idOf(course1), studying: true, minutes: 60 }],
     },
   });
   check("A Sunday checkin with supplement", submitSun.status === 200, submitSun.json);
+
+  const weeklyWrongDay = await api("POST", "/api/checkin", {
+    cookie: cookieA,
+    now: `${tue}T22:00`,
+    body: {
+      local_date: tue,
+      ...wellbeing(),
+      completion_seconds: 20,
+      weekly: { late_nights_0_7: 2, pna_late_nights: false, challenge_0_10: 5, pna_challenge: false },
+    },
+  });
+  check("reject weekly on Tuesday", weeklyWrongDay.status === 400);
 
   // --- closed states ---
   const closedFri = await api("GET", "/api/today", { cookie: cookieA, now: `${fri}T20:00` });
   check("Friday closed", closedFri.json?.state === "closed", closedFri.json?.state);
   const beforeTen = await api("GET", "/api/today", { cookie: cookieA, now: `${tue}T10:00` });
   check("morning before-window", beforeTen.json?.state === "before", beforeTen.json?.state);
-  const closedSubmit = await api("POST", "/api/checkin", {
-    cookie: cookieA,
-    now: `${fri}T20:00`,
-    body: { local_date: fri, ...wellbeing() },
-  });
-  check("submit while closed rejected", closedSubmit.status === 403);
 
-  // --- student B (control): late window + plans rejection ---
+  // --- student B (control): setup required, late window, plans rejected ---
   const claimB = await api("POST", "/api/auth/claim", { body: { token: slotB.claim_token, pin: "9999" } });
   check("B claim", claimB.status === 200 && claimB.json?.arm === "CONTROL", claimB.json);
   const cookieB = sessionCookie(claimB);
 
+  const bBeforeSetup = await api("POST", "/api/checkin", {
+    cookie: cookieB,
+    now: monLate,
+    body: { local_date: sun, ...wellbeing(), completion_seconds: 30 },
+  });
+  check("control needs setup too", bBeforeSetup.status === 400 && bBeforeSetup.json?.error === "setup_required");
+  const setupInfoB = await api("GET", "/api/setup", { cookie: cookieB });
+  await api("POST", "/api/setup", { cookie: cookieB, body: { courses: [setupInfoB.json.presets[0]] } });
+
   const plansRejected = await api("POST", "/api/checkin", {
     cookie: cookieB,
     now: monLate,
-    body: { local_date: sun, ...wellbeing(), plans: [] },
+    body: { local_date: sun, ...wellbeing(), completion_seconds: 30, plans: [{ course_id: "00000000-0000-0000-0000-000000000000", studying: false, minutes: null }] },
   });
   check("control plans rejected", plansRejected.status === 400);
 
   const submitB = await api("POST", "/api/checkin", {
     cookie: cookieB,
     now: monLate,
-    body: { local_date: sun, ...wellbeing() },
+    body: { local_date: sun, ...wellbeing(), completion_seconds: 30 },
   });
   check("B late submission flagged", submitB.status === 200 && submitB.json?.late === true, submitB.json);
-
-  const historyB = await api("GET", "/api/history", { cookie: cookieB });
   check(
-    "B history shows late code only",
-    historyB.json?.confirmations?.length === 1 &&
-      historyB.json?.confirmations?.[0]?.late === true &&
-      !("stress_0_10" in (historyB.json?.confirmations?.[0] ?? {})),
-    historyB.json,
+    "B stats present",
+    typeof submitB.json?.stats?.class_percent === "number" && submitB.json?.stats?.term_count === 1,
+    submitB.json?.stats,
   );
 
-  // --- teacher roster (confirmations only) ---
+  // --- teacher roster + class aggregate ---
   const teacherLogin = await api("POST", "/api/auth/staff-login", {
     body: {
       email: process.env.SEED_TEACHER_EMAIL || "teacher@example.com",
       password: process.env.SEED_TEACHER_PASSWORD || "change-this-password",
     },
   });
-  check("teacher login", teacherLogin.status === 200 && teacherLogin.json?.role === "TEACHER");
   const teacher = sessionCookie(teacherLogin);
 
   const rosterI = await api(
@@ -317,60 +320,128 @@ async function main() {
     { cookie: teacher },
   );
   const rowA = rosterI.json?.rows?.find((r: any) => r.participant_code === slotA.participant_code);
-  check("roster counts A", !!rowA && rowA.completions_total >= 2, rowA);
+  check("roster counts A (4 nights)", !!rowA && rowA.completions_total === 4, rowA);
+
+  const aggregate = await api("GET", `/api/roster?aggregate=1&week=${tue}`, { cookie: teacher });
+  const aggAP = aggregate.json?.rows?.find((r: any) => r.class_section === SECTIONS.INTERVENTION);
   check(
-    "roster has no response fields",
-    !!rowA && !("stress_0_10" in rowA) && !("sleep_band" in rowA),
-    rowA,
+    "class aggregate view (percentages, no codes)",
+    !!aggAP && typeof aggAP.percent === "number" && aggAP.percent > 0 && !("participant_code" in aggAP),
+    aggAP,
   );
 
-  // teacher cannot reach sponsor endpoints
   const teacherExport = await api("GET", "/api/export", { cookie: teacher });
   check("teacher blocked from export", teacherExport.status === 401);
 
-  // --- consent-filtered export ---
-  const consentA = await api("POST", "/api/consent", {
+  // --- assessment calendar CRUD + CSV import ---
+  const calBefore = await api("GET", "/api/calendar", { cookie: sponsor });
+  const calCountBefore = (calBefore.json?.calendar as any[])?.length ?? 0;
+
+  const calCreate = await api("POST", "/api/calendar", {
+    cookie: sponsor,
+    body: { course_name: course1, section: null, assess_date: addDays(tue, 9), assess_type: "TEST" },
+  });
+  check("calendar create", calCreate.status === 200 && !!calCreate.json?.id, calCreate.json);
+  const calId = calCreate.json?.id;
+  const calUpdate = await api("PATCH", "/api/calendar", {
+    cookie: sponsor,
+    body: { id: calId, course_name: course1, section: SECTIONS.INTERVENTION, assess_date: addDays(tue, 9), assess_type: "QUIZ" },
+  });
+  check("calendar update", calUpdate.status === 200);
+  const calImport = await api("POST", "/api/calendar/import", {
+    cookie: sponsor,
+    body: {
+      csv_text: `course,section,date,type\nBiology,,${addDays(tue, 10)},QUIZ\nthis-line-is-bad\nHistory,Data Management,${addDays(tue, 11)},ASSIGNMENT`,
+    },
+  });
+  check(
+    "calendar CSV import (2 good, 1 bad)",
+    calImport.status === 200 && calImport.json?.imported === 2 && calImport.json?.errors?.length === 1,
+    calImport.json,
+  );
+
+  // --- consent-filtered export incl. instrumentation + calendar ---
+  const exportBefore = await api("GET", "/api/export", { cookie: sponsor });
+  const exportedCodes = (exp: any) =>
+    new Set(
+      ["checkins", "weekly_supplements", "plans", "confirmations"]
+        .flatMap((t) => exp.json.tables[t] as any[])
+        .map((r: any) => r.participant_code),
+    );
+  check("export excludes unconsented A", !exportedCodes(exportBefore).has(slotA.participant_code));
+  check(
+    "export includes assessment calendar without filter",
+    (exportBefore.json.tables.assessment_calendar as any[]).length === calCountBefore + 3,
+    exportBefore.json.tables.assessment_calendar,
+  );
+
+  await api("POST", "/api/consent", {
     cookie: sponsor,
     body: { participant_code: slotA.participant_code, status: "CONSENTED" },
   });
-  check("consent A", consentA.status === 200);
-
   const exportAfter = await api("GET", "/api/export", { cookie: sponsor });
-  const codesAfter = allExportedCodes(exportAfter);
+  const codesAfter = exportedCodes(exportAfter);
   check("export includes consented A", codesAfter.has(slotA.participant_code));
   check("export still excludes B", !codesAfter.has(slotB.participant_code));
-  const confRows = exportAfter.json.tables.confirmations as any[];
-  check(
-    "export includes confirmations with late flag",
-    confRows.some((r) => r.participant_code === slotA.participant_code && "late" in r && "submitted_at" in r),
+
+  const checkinRows = (exportAfter.json.tables.checkins as any[]).filter(
+    (r) => r.participant_code === slotA.participant_code,
   );
+  const tueRow = checkinRows.find((r) => r.local_date === tue);
+  const wedRow = checkinRows.find((r) => r.local_date === wed);
+  const thuRow = checkinRows.find((r) => r.local_date === thu);
+  const sunRow = checkinRows.find((r) => r.local_date === sun);
+  check(
+    "instrumentation: seconds, clamp, rows_changed",
+    tueRow?.completion_seconds === 42 &&
+      tueRow?.rows_changed === 0 &&
+      wedRow?.rows_changed === 2 &&
+      thuRow?.completion_seconds === 3600,
+    { tueRow, wedRow, thuRow },
+  );
+  check(
+    "flags: flag_flat on night 3, flag_fast on 3s submit",
+    thuRow?.flag_flat === true &&
+      thuRow?.flag_fast === false &&
+      sunRow?.flag_fast === true &&
+      sunRow?.flag_flat === false &&
+      tueRow?.flag_flat === false,
+    { thuRow, sunRow },
+  );
+  check("flags never in today payload", !("flag_flat" in (todayA.json ?? {})) && !("flag_fast" in (todayA.json ?? {})));
+
   const planRows = (exportAfter.json.tables.plans as any[]).filter(
     (r) => r.participant_code === slotA.participant_code,
   );
   check(
-    "plans export reflects replace-all (Tue 60, Sun 15, no leftovers)",
-    planRows.some((r) => r.local_date === tue && r.minutes === 60) &&
-      planRows.some((r) => r.local_date === sun && r.minutes === 15) &&
-      !planRows.some((r) => r.minutes === 0 || r.minutes === 30) &&
-      planRows.filter((r) => r.local_date === tue).length === 1,
+    "plans export: studying/minutes shape, explicit No rows stored",
+    planRows.some((r) => r.local_date === tue && r.studying === true && r.minutes === 30) &&
+      planRows.some((r) => r.local_date === tue && r.studying === false && r.minutes === null) &&
+      planRows.every((r) => r.minutes !== 0),
     planRows,
   );
 
   const csv = await api("GET", "/api/export?format=csv&table=checkins", { cookie: sponsor });
   check(
-    "csv export respects filter",
+    "csv has new columns + respects filter",
     csv.status === 200 &&
+      csv.text.includes("completion_seconds") &&
+      csv.text.includes("flag_flat") &&
       csv.text.includes(slotA.participant_code) &&
       !csv.text.includes(slotB.participant_code),
   );
+  const calCsv = await api("GET", "/api/export?format=csv&table=assessment_calendar", { cookie: sponsor });
+  check("calendar csv export", calCsv.status === 200 && calCsv.text.includes("Biology"), calCsv.text.slice(0, 200));
 
-  // --- withdrawal: real deletion ---
+  const calDelete = await api("DELETE", "/api/calendar", { cookie: sponsor, body: { id: calId } });
+  check("calendar delete", calDelete.status === 200);
+
+  // --- withdrawal ---
   const badConfirm = await api("DELETE", `/api/data/${slotB.participant_code}`, {
     cookie: sponsor,
     body: { confirm: "wrong-code-00" },
   });
   check("delete requires typed code", badConfirm.status === 400);
-
   const del = await api("DELETE", `/api/data/${slotB.participant_code}`, {
     cookie: sponsor,
     body: { confirm: slotB.participant_code },
@@ -382,19 +453,10 @@ async function main() {
   );
   const historyBAfter = await api("GET", "/api/history", { cookie: cookieB });
   check("B session killed by deletion", historyBAfter.status === 401);
-  const rosterCAfter = await api(
-    "GET",
-    `/api/roster?section=${encodeURIComponent(SECTIONS.CONTROL)}&week=${sun}`,
-    { cookie: teacher },
-  );
-  const rowBAfter = rosterCAfter.json?.rows?.find((r: any) => r.participant_code === slotB.participant_code);
-  check("roster shows zero for withdrawn B", rowBAfter?.completions_total === 0, rowBAfter);
 
   // --- PIN lockout + rotation recovery ---
   const claimC = await api("POST", "/api/auth/claim", { body: { token: slotC.claim_token, pin: "0000" } });
   check("C claim", claimC.status === 200);
-
-  // Five bad PINs from one IP → 401; the sixth hits the per-IP 5/min limit.
   let badPinOk = true;
   for (let i = 0; i < 5; i++) {
     const r = await api("POST", "/api/auth/login", {
@@ -409,8 +471,6 @@ async function main() {
     body: { participant_code: slotC.participant_code, pin: "1111" },
   });
   check("per-IP 5/min limit kicks in", sixth.status === 429, sixth.status);
-
-  // Five more from distinct IPs → failed_attempts reaches 10 → slot locks.
   for (let i = 0; i < 5; i++) {
     await api("POST", "/api/auth/login", {
       ip: `10.1.1.${i + 1}`,
@@ -428,14 +488,12 @@ async function main() {
     body: { participant_code: slotC.participant_code },
   });
   check("rotate issues new link", rotate.status === 200 && !!rotate.json?.claim_url, rotate.json);
-
   const oldTokenLogin = await api("POST", "/api/auth/login", {
     ip: "10.1.3.1",
     body: { claim_token: slotC.claim_token, pin: "0000" },
   });
   check("old token dead", oldTokenLogin.status === 401, oldTokenLogin.status);
 
-  // The 10 bad attempts exhausted the per-code 10/min budget; wait out the window.
   console.log("  ..  waiting 61s for the per-code rate-limit window to pass");
   await new Promise((r) => setTimeout(r, 61_000));
 

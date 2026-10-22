@@ -64,23 +64,27 @@ recovery — the app holds no identity to recover against.
 ### Running an export
 
 `/admin/export` → pick a date range (blank = everything) → download **All tables (JSON)**
-or per-table CSV. Exports contain `checkins`, `weekly_supplements`, `plans`,
-`test_dates`, and `confirmations` (submission timestamps + late flags — your fallback
-completion dataset). The query itself filters to codes with consent status `CONSENTED`
-that are not excluded; unconsented rows are never read. Study lead-time is derived, never
-entered: earliest `plans.local_date` per course minus that course's `test_date`. Every
-export is written to the audit log.
+or per-table CSV. Exports contain `checkins` (including `completion_seconds`,
+`rows_changed`, and the `flag_fast`/`flag_flat` data-quality flags — never shown in any
+UI, exclusion decisions happen in analysis), `weekly_supplements`, `plans`
+(`studying` boolean + `minutes`; explicit No rows are stored, unanswered courses have no
+row), `confirmations` (submission timestamps + late flags — your fallback completion
+dataset), and `assessment_calendar` (class-level, always in full). The query filters
+student tables to codes with consent status `CONSENTED` that are not excluded;
+unconsented rows are never read. Study lead-time is derived offline: match students'
+courses to `assessment_calendar` dates, then earliest `plans.local_date` per course minus
+the assessment date. Every export is written to the audit log.
 
 ### Processing a withdrawal
 
 1. Verify against the paper sheet.
 2. `/admin/consent` → set the code to `WITHDRAWN` (signs them out immediately).
 3. `/admin/data` → enter the code twice → **Permanently delete**. This removes every row
-   for the code across check-ins, supplements, plans, confirmations, test dates, courses,
-   push subscriptions, and sessions. The consent row stays as `WITHDRAWN` so exports keep
+   for the code across check-ins, supplements, plans, confirmations, courses, push
+   subscriptions, and sessions. The consent row stays as `WITHDRAWN` so exports keep
    excluding the code, and the deletion itself is audit-logged.
 
-### Changing a preset course list mid-study (deliberate action only)
+### Changing course presets (deliberate action only)
 
 `course_presets` is frozen at seed time and has no admin UI on purpose: a mid-October
 addition makes students' longitudinal rows messy. If a change is genuinely required, do
@@ -90,7 +94,7 @@ date and reason in your study log, and record it in the audit log (`insert into
 audit_log (actor_role, action, meta) values ('SPONSOR', 'presets.change', '...')`). Never
 rename a preset after students have enrolled in it — add the new name and leave the old.
 
-## Backups (24-month retention)
+## Backup and retention
 
 The IRB commits you to retaining the data for 24 months. Two layers: **(1)** confirm your
 Postgres host's automated backups are on — on Neon this is the built-in point-in-time
@@ -103,9 +107,9 @@ kept on school-controlled storage. Test a restore once per term (`gpg -d` then `
 `psql`). A hosted project with no verified backup is one bad Tuesday away from losing a
 term of panel data.
 
-## What the app does, mapped to the ethics application
+## IRB compliance map
 
-Hand this section to your ethics reviewer or any parent who asks.
+Hand this table to your ethics reviewer or any parent who asks.
 
 | Commitment in the application | How the app enforces it |
 | --- | --- |
@@ -129,12 +133,22 @@ Hand this section to your ethics reviewer or any parent who asks.
    `scripts/seed.ts` first — they freeze afterwards).
 6. `vercel deploy --prod`.
 
-`vercel.json` registers two cron jobs: `remind` (scheduled at both UTC hours that can be
-7:30pm in `APP_TIMEZONE`; a local-time guard makes exactly one fire, so DST is handled)
-and `verify` (checks the reminder ran, records the result, and is surfaced by
-`/api/health`). On the Vercel Hobby plan each cron runs at most once per day — upgrade to
-Pro for exact twice-daily scheduling; the app degrades gracefully either way (missed
-reminders are acceptable by design, and `verify` records the miss).
+`vercel.json` registers two cron jobs: `remind` (fires each slot in `REMINDER_SLOTS`,
+default `19:30,21:30`; scheduled at every plausible UTC half-hour with a local-time guard
+so exactly one run per slot fires in either DST mode) and `verify` (checks the reminder
+ran, records the result, and is surfaced by `/api/health`). On the Vercel Hobby plan each
+cron runs at most once per day — upgrade to Pro for exact multi-slot scheduling; the app
+degrades gracefully either way (missed reminders are acceptable by design, and `verify`
+records the miss).
+
+## Demo mode
+
+`/demo` is a public, no-login sandbox of the nightly flow (eight preloaded courses,
+night-30 prefill active, success screen with a live "Completed in N seconds" line). It
+makes zero network requests and stores nothing anywhere — state dies with the browser
+tab. It exists so a teacher can evaluate the effort on their own phone. For now it is
+also the landing page: `/` redirects to `/demo`, and students and staff reach the real
+app through `/login`.
 
 ## Local development & verification
 
