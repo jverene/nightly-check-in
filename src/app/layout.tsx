@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   title: "Nightly Check-In",
   description: "Nightly check-in",
   manifest: "/manifest.webmanifest",
-  icons: { apple: "/icons/apple-touch-icon.png" },
+  icons: { icon: "/icons/icon-192.png", apple: "/icons/apple-touch-icon.png" },
   appleWebApp: { capable: true, statusBarStyle: "default", title: "Check-In" },
 };
 
