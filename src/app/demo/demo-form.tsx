@@ -65,10 +65,6 @@ function fakeCode(): string {
   return `${raw.slice(0, 4)}-${raw.slice(4)}`;
 }
 
-function courseAnswered(s: PlanCardState | undefined): boolean {
-  return !!s?.touched && (s.answer === "no" || (s.answer === "yes" && s.minutes !== null));
-}
-
 export function DemoForm() {
   const [step, setStep] = useState(0);
   const [plans, setPlans] = useState<Record<string, PlanCardState>>(() =>
@@ -119,26 +115,6 @@ export function DemoForm() {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  function wellbeingAnswered(s: number): boolean {
-    const a = [stress, sleepBand, quality, workload][s - STEP_STRESS];
-    // Answered means "has a value" XOR "prefer not to answer".
-    return a ? a.pna !== (a.value !== null) : false;
-  }
-
-  function stepAnswered(s: number): boolean {
-    if (s < 8) return courseAnswered(plans[DEMO_COURSES[s].id]);
-    if (s < STEP_SUBMIT) return wellbeingAnswered(s);
-    return false;
-  }
-
-  /** Forward always lands on the next page that still needs input. */
-  function nextUnanswered(from: number): number {
-    for (let s = from + 1; s < STEP_SUBMIT; s++) {
-      if (!stepAnswered(s)) return s;
-    }
-    return STEP_SUBMIT;
-  }
-
   /**
    * Move to a page in the wizard's fixed order. Forward moves push an entry
    * for every page they pass, so Back always lands on the page before the one
@@ -162,15 +138,18 @@ export function DemoForm() {
     goTo(Math.max(step - 1, 0));
   }
 
+  /** Forward is always exactly one page: no question is ever skipped. */
   function advance() {
     setError(null);
-    goTo(nextUnanswered(step));
+    goTo(Math.min(step + 1, STEP_SUBMIT));
   }
 
   function selectCourse(id: string, side: "yes" | "no") {
     const cur = plans[id];
     if (cur?.touched && cur.answer === side) {
-      setPlans({ ...plans, [id]: { answer: null, minutes: null, touched: false, prefilled: cur.prefilled } });
+      // Tapping the answer already shown accepts it and moves on; it never
+      // clears the page, so revisitng a prefilled course stays one tap.
+      if (side === "no" || cur.minutes !== null) advance();
       return;
     }
     setPlans({
@@ -194,11 +173,10 @@ export function DemoForm() {
       ]),
     );
     setPlans(next);
-    // Jump to the first Yes that still needs minutes, else to the sliders.
-    const needsMinutes = DEMO_COURSES.findIndex(
-      (c) => next[c.id]?.touched && next[c.id]?.answer === "yes" && next[c.id]?.minutes === null,
-    );
-    goTo(needsMinutes >= 0 ? needsMinutes : STEP_STRESS);
+    // Stay put if this course is a Yes that still needs minutes; otherwise
+    // move exactly one page. The whole course list is never skipped over.
+    const cur = next[DEMO_COURSES[step].id];
+    if (cur.touched && (cur.answer === "no" || cur.minutes !== null)) goTo(step + 1);
   }
 
   function onKeyDown(e: React.KeyboardEvent) {

@@ -45,6 +45,24 @@ try {
 
   const text = () => page.evaluate(() => document.body.innerText);
   const progress = async () => (await text()).match(/(\d+) of 12/)?.[1];
+  const heading = () => page.evaluate(() => document.querySelector("h1")?.textContent?.trim() ?? "");
+  const waitHeading = (name) =>
+    page
+      .waitForFunction(
+        (expected) => document.querySelector("h1")?.textContent?.trim() === expected,
+        { timeout: 2000 },
+        name,
+      )
+      .catch(() => {});
+  const clickBack = () =>
+    page.evaluate(() => [...document.querySelectorAll("button")].find((b) => b.textContent.includes("Back"))?.click());
+  // The No button is the first card button on a course page.
+  const clickNo = () => page.evaluate(() => document.querySelector(".yn-btn")?.click());
+  const clickChip = (label) =>
+    page.evaluate(
+      (l) => [...document.querySelectorAll(".chip-strip .chip")].find((c) => c.textContent === l)?.click(),
+      label,
+    );
 
   // Hydration must attach handlers — clicking No advances to course 2.
   await page.waitForSelector(".yn-btn", { timeout: 5000 });
@@ -88,19 +106,43 @@ try {
   await page.waitForFunction(() => document.body.innerText.includes("English"), { timeout: 2000 }).catch(() => {});
   check("minutes chip advances to course 3", (await text()).includes("English"));
 
-  // Same as yesterday: jumps to first Yes needing minutes (Biology=d4... AP Stats d1 was answered No, so first unconfirmed prefill-Yes is Biology).
+  // Same as yesterday fills every course, then moves exactly one page: the
+  // button was pressed on English, so the next page is Biology. Nothing is
+  // skipped, even though the remaining courses are already prefilled.
   await page.evaluate(() => {
     const btn = [...document.querySelectorAll("button")].find((b) => b.textContent.includes("Same as yesterday"));
     btn?.click();
   });
-  await page.waitForFunction(() => document.body.innerText.includes("Biology"), { timeout: 2000 }).catch(() => {});
-  check("same-as-yesterday jumps to Biology minutes", (await text()).includes("Biology"), await text());
+  await waitHeading("Biology");
+  check("same-as-yesterday moves one page to Biology", (await heading()) === "Biology", await heading());
+  await clickChip("1h");
+  await waitHeading("Chemistry");
+  check("Biology minutes advance one page (Chemistry)", (await heading()) === "Chemistry", await heading());
+
+  // Changing an answer to Yes must not jump to the sliders: it advances one
+  // course page, and the minutes chip only chooses the duration.
   await page.evaluate(() => {
-    const chip = [...document.querySelectorAll(".chip-strip .chip")].find((c) => c.textContent === "1h");
-    chip?.click();
+    const yes = [...document.querySelectorAll(".yn-btn")][1];
+    yes?.click();
   });
+  await page.waitForSelector(".chip-strip .chip", { timeout: 2000 }).catch(() => {});
+  await clickChip("15");
+  await waitHeading("Physics");
+  check(
+    "changing an answer to Yes advances one page, not to the sliders",
+    (await heading()) === "Physics" && !(await text()).includes("stressed"),
+    await heading(),
+  );
+
+  // Prefilled No pages accept the visible answer with one tap each.
+  await clickNo();
+  await waitHeading("History");
+  check("prefilled No advances one page (History)", (await heading()) === "History", await heading());
+  await clickNo();
+  await waitHeading("French");
+  await clickNo();
   await page.waitForFunction(() => document.body.innerText.includes("stressed"), { timeout: 2000 }).catch(() => {});
-  check("lands on stress slider after last minutes", (await text()).includes("stressed"), await text());
+  check("last course lands on the stress slider", (await text()).includes("stressed"), await text());
 
   // Slider: set value and commit (pointerup) → advances.
   await page.evaluate(() => {
@@ -162,33 +204,30 @@ try {
   check("week stat shows", finalText.includes("This week: 3 of 5 nights"));
   check("no class-percentage line", !finalText.includes("Your class is at"));
 
-  // Back walks the fixed page order, one page at a time. "Same as yesterday"
-  // jumps from course 1 to Biology, so Back has to pass through English and
-  // Data Management before it reaches course 1 again.
-  const heading = () => page.evaluate(() => document.querySelector("h1")?.textContent?.trim() ?? "");
-  const clickBack = () =>
-    page.evaluate(() => [...document.querySelectorAll("button")].find((b) => b.textContent.includes("Back"))?.click());
-  const waitHeading = (name) =>
-    page
-      .waitForFunction(
-        (expected) => document.querySelector("h1")?.textContent?.trim() === expected,
-        { timeout: 2000 },
-        name,
-      )
-      .catch(() => {});
-
+  // Back walks the fixed page order, one page at a time. The second run fills
+  // every course with Same as yesterday, so Back has to pass through English
+  // and Data Management before it reaches course 1 again.
   await page.goto(`${BASE}/demo`, { waitUntil: "networkidle0" });
   await page.waitForSelector(".yn-btn", { timeout: 5000 });
+  // Course 1 is a Yes with no minutes yet, so Same as yesterday stays on it
+  // for the minutes tap rather than skipping ahead.
   await page.evaluate(() =>
     [...document.querySelectorAll("button")].find((b) => b.textContent.includes("Same as yesterday"))?.click(),
   );
   await page.waitForSelector(".chip-strip .chip", { timeout: 2000 }).catch(() => {});
-  await page.evaluate(() => {
-    const chip = [...document.querySelectorAll(".chip-strip .chip")].find((c) => c.textContent === "30");
-    chip?.click();
-  });
+  check(
+    "same-as-yesterday stays for the current Yes minutes",
+    (await heading()) === "AP Statistics" && !!(await page.$(".chip-strip .chip")),
+    await heading(),
+  );
+  await clickChip("30");
+  await waitHeading("Data Management");
+  check("same-as-yesterday then advances one page", (await heading()) === "Data Management", await heading());
+  await clickNo();
+  await waitHeading("English");
+  check("prefilled No advances one page (English)", (await heading()) === "English", await heading());
+  await clickNo();
   await waitHeading("Biology");
-  check("same-as-yesterday lands on Biology", (await heading()) === "Biology", await heading());
 
   await clickBack();
   await waitHeading("English");
@@ -206,17 +245,9 @@ try {
 
   // Browser back follows the same order: from the stress slider it lands on
   // French, the page before it, not on whatever page was visited last.
-  await page.evaluate(() => {
-    const chip = [...document.querySelectorAll(".chip-strip .chip")].find((c) => c.textContent === "45");
-    chip?.click();
-  });
-  await waitHeading("Biology");
-  await page.evaluate(() => {
-    const chip = [...document.querySelectorAll(".chip-strip .chip")].find((c) => c.textContent === "1h");
-    chip?.click();
-  });
+  for (let i = 0; i < 8; i++) await page.keyboard.press("ArrowDown");
   await page.waitForFunction(() => document.body.innerText.includes("stressed"), { timeout: 2000 }).catch(() => {});
-  check("minutes answer lands on the stress slider", (await text()).includes("stressed"), await text());
+  check("ArrowDown walks pages one at a time", (await text()).includes("stressed"), await text());
 
   await page.goBack();
   await new Promise((r) => setTimeout(r, 300));
