@@ -1,8 +1,10 @@
 node_modules/
 .next/
+.next-dev/
 .vercel
 .env
 .env.local
 *.tsbuildinfo
 next-env.d.ts
 .DS_Store
+.freebuff/
